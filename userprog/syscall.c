@@ -140,6 +140,12 @@ void Exit(int status){
   thread_current()->exit_status = status;
   for(int i = 3; i < 128; i++) if(is_valid_file_descrpitor(i)) Close(i);
 
+  struct list *children = &(thread_current()->children); 
+  struct list_elem *e;
+  for (e = list_begin(children); e != list_end(children); e = list_next(e)) {
+    Wait(list_entry(e, struct thread, elem)->tid);
+  }
+
   thread_exit();
 }
 
