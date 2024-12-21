@@ -3,9 +3,18 @@
 
 #include <debug.h>
 #include <list.h>
+#include <hash.h>
 #include <stdint.h>
 #include "threads/synch.h"
+#include <hash.h>
+// #include "threads/fixed-point.h"
+// #ifndef USERPROG
+// extern bool thread_prior_aging;
+// #endif
 
+/* Scheduling. */
+#define TIME_SLICE 4            /* # of timer ticks to give each thread. */
+// #define TIMER_FREQ 100          /* Frequency of timer interrupts. */
 /* States in a thread's life cycle. */
 enum thread_status
   {
@@ -14,7 +23,9 @@ enum thread_status
     THREAD_BLOCKED,     /* Waiting for an event to trigger. */
     THREAD_DYING        /* About to be destroyed. */
   };
-
+// struct list sleep_list;
+// struct list ready_list;
+// struct list all_list;
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
@@ -93,12 +104,13 @@ struct thread
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
+   //  int64_t wakeup_tick;
+    /* Exit Status */
+    int exit_status;
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
-    /* Exit Status */
-    int exit_status;
     /* File Descriptor Table*/
     struct file* fd_table[128];
     /*child*/
@@ -108,19 +120,26 @@ struct thread
     struct semaphore child_lock;
     struct semaphore load_lock;
     struct thread *parent;
-    
+   struct file *file;   /*mapped file in this thread*/
+   struct hash page_table;
+   struct list mmap_list;
     int flag;
 #endif
-
+   //  int nice;
+   //  int recent_cpu;
     /* Owned by thread.c. */
+    
     unsigned magic;                     /* Detects stack overflow. */
+
+   unsigned max_mapid;
   };
+
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
-
+// void thread_aging (void);
 void thread_init (void);
 void thread_start (void);
 
@@ -137,6 +156,12 @@ struct thread *thread_current (void);
 tid_t thread_tid (void);
 const char *thread_name (void);
 
+// void thread_sleep (int64_t ticks);
+// void thread_wakeup (int64_t ticks);
+// struct list* get_sleep_list(void);
+// struct list* get_ready_list(void);
+// struct list* get_all_list(void);
+// struct thread* get_idle_thread(void);
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
 
@@ -151,6 +176,9 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
-void init_userprog(struct thread *t);
 
+void init_userprog(struct thread *t);
+void recalculate_load_avg(void);
+void recalculate_recent_cpu(void);
+void recalculate_priority(void);
 #endif /* threads/thread.h */

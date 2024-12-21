@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "userprog/syscall.h"
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
@@ -15,12 +16,15 @@
 #include "threads/init.h"
 #include "threads/interrupt.h"
 #include "threads/palloc.h"
-#include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "vm/frame.h"
+#include "vm/page.h"
+#include "vm/swap.h"
+
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
-
+extern struct lock filesys_lock;
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -75,6 +79,9 @@ start_process (void *file_name_)
   char *file_name = file_name_;
   struct intr_frame if_;
   bool success;
+
+  /* Initialize the set of vm_entries*/
+  page_table_init(&(thread_current()->page_table));
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -149,9 +156,14 @@ process_exit (void)
 {
   
   uint32_t *pd;
-
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
+  // palloc_free_page (thread_current()->pagedir);
+  for(unsigned i = 0; i <= thread_current()->max_mapid; i++) Munmap(i);
+  /*pte delete*/
+  file_close(thread_current()->file);
+  page_table_destroy(&(thread_current()->page_table));
+
   pd = thread_current()->pagedir;
 
   if (pd != NULL) 
@@ -353,15 +365,18 @@ load (const char *file_name, void (**eip) (void), void **esp)
     argv[i++] = token;
     token = strtok_r(NULL, " ", &save_ptr);
   }while(token != NULL);
+  
 
   argc = i;
+  lock_acquire(&filesys_lock);
   file = filesys_open (argv[0]);
-
+  if (file) t->file = file;
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
+
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -452,7 +467,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  lock_release(&filesys_lock);
   return success;
 }
 
@@ -536,29 +551,14 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-      /* Get a page of memory. */
-      uint8_t *kpage = palloc_get_page (PAL_USER);
-      if (kpage == NULL)
-        return false;
-
-      /* Load this page. */
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
-
-      /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
+      struct PTE* pte = create_pte(upage, LOAD, writable, file, ofs, page_read_bytes, false);
+      if(pte == NULL) return false;
+      page_insert_entry(&(thread_current()->page_table), pte);
 
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
+      ofs += page_read_bytes;
       upage += PGSIZE;
     }
   return true;
@@ -569,18 +569,22 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (void **esp) 
 {
-  uint8_t *kpage;
-  bool success = false;
+  struct frame *f = alloc_page_to_frame(PAL_USER | PAL_ZERO);
+  if(f == NULL) return false;
 
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
-  if (kpage != NULL) 
-    {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
-        *esp = PHYS_BASE;
-      else
-        palloc_free_page (kpage);
-    }
+  bool success = false;
+  success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, f->pfn, true);
+
+  if(success){
+    *esp = PHYS_BASE;
+
+    // create a page table entry for the stack
+    f->pte = create_pte(((uint8_t *) PHYS_BASE) - PGSIZE, SWAP, true, NULL, 0, 0, true);
+    if(f->pte == NULL) return false;
+    page_insert_entry(&(thread_current()->page_table), f->pte);
+  }
+  else
+    free_frame(f->pfn);
   return success;
 }
 
@@ -596,10 +600,65 @@ setup_stack (void **esp)
 static bool
 install_page (void *upage, void *kpage, bool writable)
 {
+  // printf("install_page, upage: %p, kpage: %p\n", upage, kpage);
+  
   struct thread *t = thread_current ();
 
   /* Verify that there's not already a page at that virtual
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
+bool
+handle_mm_fault (struct PTE *pte) {
+  struct frame *f = alloc_page_to_frame(PAL_USER);
+  // if(f == NULL) return false;
+  f->pte = pte;
+  bool success = false;
+
+  // simply load from the same file in the disk
+  if (pte->type == LOAD || pte->type == MEMMAP) {
+    if (load_to_frame(f->pfn, pte)) {
+      success = install_page(pte->vpn, f->pfn, pte->writable);
+    }
+  }
+  // if from swap space, but not in the memory yet, swap in
+  else if (pte->type == SWAP){
+    swap_in(pte->swap_slot, f->pfn);
+    success = install_page(pte->vpn, f->pfn, pte->writable);
+  }
+
+  // if load fails, free the frame
+  if (success) pte->mem_flag = true;
+  else free_frame(f->pfn);
+
+  return success;
+}
+
+bool
+stack_growth (void *addr, void *esp) {
+  // check if the address is valid
+  // and check if the address is below PHYS_BASE - 0x800000
+  // if address is below PHYS_BASE - 0x800000, then it cannot be a stack growth
+  if (!is_user_vaddr(addr) || addr < PHYS_BASE - 0x800000) return false;
+  // check if the address is below PHYS_BASE - 32 (qualify the PUSHA instruction)
+  if (addr < esp -32) return false;
+
+  // get boundary
+  void *upage = pg_round_down(addr);
+
+  struct frame *f = alloc_page_to_frame(PAL_USER | PAL_ZERO);
+  if(f == NULL) return false;
+
+  bool success = install_page(upage, f->pfn, true);
+  if(success){
+    f->pte = create_pte(upage, SWAP, true, NULL, 0, 0, true);
+    if(f->pte == NULL) return false;
+    page_insert_entry(&(thread_current()->page_table), f->pte);
+  }
+  else
+    free_frame(f->pfn);
+
+  return success;
 }

@@ -31,6 +31,8 @@
 #else
 #include "tests/threads/tests.h"
 #endif
+#include "vm/frame.h"
+#include "vm/swap.h"
 #ifdef FILESYS
 #include "devices/block.h"
 #include "devices/ide.h"
@@ -114,7 +116,8 @@ main (void)
   exception_init ();
   syscall_init ();
 #endif
-
+  frame_table_init ();
+  swap_init ();
   /* Start thread scheduler and enable interrupts. */
   thread_start ();
   serial_init_queue ();
@@ -256,6 +259,10 @@ parse_options (char **argv)
         random_init (atoi (value));
       else if (!strcmp (name, "-mlfqs"))
         thread_mlfqs = true;
+#ifndef USERPROG
+      else if (!strcmp (name, "-aging"))
+        thread_prior_aging = true;
+#endif
 #ifdef USERPROG
       else if (!strcmp (name, "-ul"))
         user_page_limit = atoi (value);

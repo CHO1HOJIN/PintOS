@@ -9,6 +9,8 @@
 #include "devices/input.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "vm/page.h"
+#include "threads/malloc.h"
 
 static void syscall_handler (struct intr_frame *);
 struct lock filesys_lock;
@@ -19,9 +21,18 @@ void syscall_init (void)
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
-void check_user_vaddr(const void *vaddr) {
-  if (!is_user_vaddr(vaddr)) Exit(-1);
+void check_user_vaddr(const void *esp, const void *vaddr) {
+  if(!is_user_vaddr(vaddr) || !vaddr) Exit(-1);
+  // if(!page_lookup(vaddr)) Exit(-1);
+  // if(!page_lookup(vaddr) && !stack_growth(vaddr, esp)) Exit(-1);
 }
+
+// void check_address(int n, const void *esp) {
+//   for (int i = 0; i < n; i++) {
+//     if (((uint8_t*)esp + 4*i) == NULL || !is_user_vaddr ((uint8_t*)esp + 4*i)) Exit(-1);
+//     // if (!pt_find_entry((uint8_t*)esp + 4*i) && !stack_growth((uint8_t*)esp + 4*i, esp)) Exit(-1);
+//   }
+// }
 
 bool is_valid_file_descrpitor(int fd){
   if(fd < 3 || fd >= 128) return false;
@@ -39,57 +50,57 @@ syscall_handler (struct intr_frame *f UNUSED)
       Halt();
       break;
     case SYS_EXIT:
-      check_user_vaddr(f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 4);
       Exit(*(uint32_t *)(f->esp + 4));
       break;
     case SYS_EXEC:
-      check_user_vaddr(f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 4);
       f->eax = Exec((const char *)*(uint32_t *)(f->esp + 4));
       break;
     case SYS_WAIT:
-      check_user_vaddr(f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 4);
       f->eax = Wait(*(uint32_t *)(f->esp + 4));
       break;
     case SYS_CREATE:
-      check_user_vaddr(f->esp + 16);
-      check_user_vaddr(f->esp + 20);
-      f->eax = Create((const char *)*(uint32_t *)(f->esp + 16), (unsigned)*(uint32_t *)(f->esp + 20));
+      check_user_vaddr(f->esp, f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 8);
+      f->eax = Create((const char *)*(uint32_t *)(f->esp + 4), (unsigned)*(uint32_t *)(f->esp + 8));
       break;
     case SYS_REMOVE:
-      check_user_vaddr(f->esp + 4);
+      check_user_vaddr(f->esp,f->esp + 4);
       f->eax = Remove((const char *)*(uint32_t *)(f->esp + 4));
       break;
     case SYS_OPEN:
-      check_user_vaddr(f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 4);
       f->eax = Open((const char *)*(uint32_t *)(f->esp + 4));
       break;
     case SYS_FILESIZE:
-      check_user_vaddr(f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 4);
       f->eax = Filesize((int)*(uint32_t *)(f->esp + 4));
       break;
     case SYS_READ:
-      check_user_vaddr(f->esp + 4);
-      check_user_vaddr(f->esp + 8);
-      check_user_vaddr(f->esp + 12);
+      check_user_vaddr(f->esp, f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 8);
+      check_user_vaddr(f->esp, f->esp + 12);
       f->eax = Read((int)*(uint32_t*)(f->esp + 4), (void*)*(uint32_t*)(f->esp + 8), (unsigned)*(uint32_t*)(f->esp + 12));
       break;
     case SYS_WRITE:
-      check_user_vaddr(f->esp + 4);
-      check_user_vaddr(f->esp + 8);
-      check_user_vaddr(f->esp + 12);
+      check_user_vaddr(f->esp, f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 8);
+      check_user_vaddr(f->esp, f->esp + 12);
       f->eax = Write((int)*(uint32_t *)(f->esp + 4),(const void *)*(uint32_t *)(f->esp + 8), (unsigned)*(uint32_t *)(f->esp + 12));
       break;
     case SYS_SEEK:
-      check_user_vaddr(f->esp + 16);
-      check_user_vaddr(f->esp + 20);
-      Seek(*(uint32_t *)(f->esp + 16), *(uint32_t *)(f->esp + 20));
+      check_user_vaddr(f->esp, f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 8);
+      Seek(*(uint32_t *)(f->esp + 4), *(uint32_t *)(f->esp + 8));
       break;
     case SYS_TELL:
-      check_user_vaddr(f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 4);
       f->eax = Tell(*(uint32_t *)(f->esp + 4));
       break;
     case SYS_CLOSE:
-      check_user_vaddr(f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 4);
       Close(*(uint32_t *)(f->esp + 4));
       break;
     case SYS_FIBONACCI:
@@ -97,6 +108,15 @@ syscall_handler (struct intr_frame *f UNUSED)
       break;
     case SYS_MAX_OF_FOUR_INT:
       f->eax = Max_of_four_int(*(uint32_t *)(f->esp + 4), *(uint32_t *)(f->esp + 8), *(uint32_t *)(f->esp + 12), *(uint32_t *)(f->esp + 16));
+      break;
+    case SYS_MMAP:
+      check_user_vaddr(f->esp, f->esp + 4);
+      check_user_vaddr(f->esp, f->esp + 8);
+      f->eax = Mmap(*(uint32_t *)(f->esp + 4), (void *)*(uint32_t *)(f->esp + 8));
+      break;
+    case SYS_MUNMAP:
+      check_user_vaddr(f->esp, f->esp + 4);
+      Munmap((unsigned)*(uint32_t *)(f->esp + 4));
       break;
     default:
       break;
@@ -138,21 +158,30 @@ int Wait (int pid){
 // 5) create: creates a new file called file with initial_size bytes
 // return true if successful, false otherwise
 bool Create (const char *file, unsigned size) {
-  if(file == NULL) Exit(-1);
-  return filesys_create(file, size);
+  check_user_vaddr(file - 16, file);
+  lock_acquire(&filesys_lock);
+  bool success = filesys_create(file, size);
+  lock_release(&filesys_lock);
+  return success;
 }
 
 // 6) remove: deletes the file called file
 // return true if successful, false otherwise
 bool Remove (const char *file){
+  check_user_vaddr(file - 8, file);
   if(file == NULL) Exit(-1);
-  return filesys_remove(file);
+  lock_acquire(&filesys_lock);
+  bool success = filesys_remove(file);
+  lock_release(&filesys_lock);
+  return success;
 } 
 
 // 7) open: opens the file called file
 // return a nonnegative integer handle called a "file descriptor" (fd)
 int Open (const char *file) {
+  check_user_vaddr(file - 8, file);
   if(file == NULL) Exit(-1);
+
   lock_acquire(&filesys_lock);
   struct file *f = filesys_open(file);
   if(f == NULL){
@@ -160,9 +189,9 @@ int Open (const char *file) {
     return TID_ERROR;
   }
   else {
+    if(strcmp(thread_current()->name, file) == NULL) file_deny_write(f);
     for(int i = 3; i < 128; i++){
       if(thread_current()->fd_table[i] == NULL) {
-        if(strcmp(thread_current()->name, file) == NULL) file_deny_write(f);
         thread_current()->fd_table[i] = f;
         lock_release(&filesys_lock);
         return i;
@@ -177,17 +206,20 @@ int Open (const char *file) {
 int Filesize (int fd) {
   if(!is_valid_file_descrpitor(fd)) return TID_ERROR;
   if (fd == 0) return TID_ERROR;
-  return file_length(thread_current()->fd_table[fd]);
+  lock_acquire(&filesys_lock);
+  int ret = file_length(thread_current()->fd_table[fd]);
+  lock_release(&filesys_lock);
+  return ret;
 }
 
 /// 9) read: reads size bytes from the file open as fd into buffer
 /// return: # of bytes actually read (STDIN = 0), -1 if error
 /// if fd > 2, read from file
 int Read (int fd, void *buffer, unsigned size){
-  lock_acquire(&filesys_lock);
-  check_user_vaddr(buffer);
+  check_user_vaddr(buffer - 8, buffer);
   unsigned i;
   //fd = 0: reads from keyboard using input_getc()
+  lock_acquire(&filesys_lock);
   if (fd == 0) {
     for (i = 0; i < size; i++){
       ((uint8_t *)buffer)[i] = input_getc();
@@ -217,7 +249,7 @@ int Read (int fd, void *buffer, unsigned size){
 int Write (int fd, const void *buffer, unsigned size){
 
   lock_acquire(&filesys_lock);
-  check_user_vaddr(buffer);
+  check_user_vaddr(buffer - 8, buffer);
 
   //fd = 1: writes to the console
   if (fd == 1) {
@@ -242,7 +274,9 @@ int Write (int fd, const void *buffer, unsigned size){
 // 11) seek: changes the next byte to be read or written in open file fd to position
 void Seek (int fd, unsigned pos) {
   if (!is_valid_file_descrpitor(fd)) Exit(-1);
+  lock_acquire(&filesys_lock);
   file_seek(thread_current()->fd_table[fd], pos);
+  lock_release(&filesys_lock);
 }
 
 // 12) tell: returns the position of the next byte to be read or written in open file fd
@@ -281,4 +315,81 @@ int Max_of_four_int(int a, int b, int c, int d) {
   if (c > M) M = c;
   if (d > M) M = d;
   return M;
+}
+
+// Load file data into memory by demand paging
+
+int Mmap(int fd, void *addr) {
+  if (addr == NULL || pg_ofs(addr) != 0 || page_lookup(addr)) return -1;
+  if (fd < 3 || fd >= 128 || thread_current()->fd_table[fd] == NULL) return -1;
+  struct mmap_file *mmap_file = malloc(sizeof(struct mmap_file));
+  if (mmap_file == NULL) return -1;
+
+  list_init(&mmap_file->pte_list);
+  list_push_back(&thread_current()->mmap_list, &mmap_file->elem);
+  mmap_file->mapid = thread_current()->max_mapid;
+  thread_current()->max_mapid += 1;
+
+  lock_acquire(&filesys_lock);
+  mmap_file->file = file_reopen(thread_current()->fd_table[fd]);
+  lock_release(&filesys_lock);
+
+  //file size = 0 -> return -1
+  off_t file_size = file_length(mmap_file->file);
+  if (file_size == 0) {
+    // free(mmap_file);
+    return -1;
+  }
+;
+  
+  
+  off_t offset = 0;
+  // read the file into memory
+  while (file_size > 0) {
+    size_t read_bytes = file_size < PGSIZE ? file_size : PGSIZE;
+    struct PTE *pte = create_pte(addr, MEMMAP, true, mmap_file->file, offset,\
+                      read_bytes, false);
+    if (pte == NULL) return 0;
+    page_insert_entry(&thread_current()->page_table, pte);
+    list_push_back(&mmap_file->pte_list, &pte->mmap_elem);
+
+    // update variables
+    file_size -= PGSIZE;
+    offset += PGSIZE;
+    addr += PGSIZE;
+  }
+
+  return mmap_file->mapid;
+}
+void Munmap(unsigned mapid) {
+  struct mmap_file *mmap_file = NULL;
+  struct list_elem *e;
+  //find the mmap_file with the given mapid
+  for (e = list_begin(&thread_current()->mmap_list); e != list_end(&thread_current()->mmap_list); e = list_next(e)) {
+    mmap_file = list_entry(e, struct mmap_file, elem);
+    if (mmap_file->mapid == mapid) break;
+  }
+  if (mmap_file == NULL) return;
+
+  struct list_elem *e2;
+  for (e2 = list_begin(&mmap_file->pte_list); e2 != list_end(&mmap_file->pte_list);) {
+    struct PTE *pte = list_entry(e2, struct PTE, mmap_elem);
+    if (pte->mem_flag && pagedir_is_dirty(thread_current()->pagedir, pte->vpn)) {
+      lock_acquire(&filesys_lock);
+      size_t read_byte = pte->read_bytes;
+      if ((size_t)file_write_at(pte->file, pte->vpn, pte->read_bytes, pte->offset) != read_byte) {
+        NOT_REACHED();
+      }
+      lock_release(&filesys_lock);
+      free_frame(pagedir_get_page(thread_current()->pagedir, pte->vpn));
+    }
+
+    pte->mem_flag = false;
+    e2 = list_remove(e2);
+    page_delete_entry(&thread_current()->page_table, pte);
+  }
+  list_remove(&mmap_file->elem);
+  free(mmap_file);
+
+  return;
 }
